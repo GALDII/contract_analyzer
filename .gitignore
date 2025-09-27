@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
+
+config.py
+
+try/
+summa.txt
+temp_docs/
+
+documents/
+
+venv/
+.venv/
+neo/
