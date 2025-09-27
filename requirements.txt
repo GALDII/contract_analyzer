@@ -7,3 +7,5 @@ pinecone-client
 python-docx
 sentence-transformers
 openai
+plotly 
+pandas

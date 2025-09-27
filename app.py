@@ -1,4 +1,7 @@
 import streamlit as st
+import plotly.graph_objects as go
+import plotly.express as px
+import pandas as pd
 from core.analyzer import analyze_contract
 from core.document_parser import parse_document
 from chatbot.vector_store import get_pinecone_retriever
@@ -11,6 +14,54 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS for enhanced styling
+st.markdown("""
+<style>
+    .main {
+        padding-top: 2rem;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f0f2f6;
+        border-radius: 10px 10px 0px 0px;
+        gap: 1px;
+        padding-left: 20px;
+        padding-right: 20px;
+        color: #262730 !important;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background-color: #ffffff;
+        border-bottom: 2px solid #1f77b4;
+        color: #262730 !important;
+    }
+    
+    .upload-section {
+        border: 2px dashed #1f77b4;
+        border-radius: 10px;
+        padding: 2rem;
+        text-align: center;
+        background-color: rgba(31, 119, 180, 0.1);
+        margin: 1rem 0;
+    }
+    
+    .upload-section h3 {
+        color: #1f77b4 !important;
+        margin-bottom: 1rem;
+    }
+    
+    .upload-section p {
+        color: #666 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Initialize session state
 if 'contract_text' not in st.session_state:
     st.session_state.contract_text = None
@@ -18,10 +69,118 @@ if 'analysis_data' not in st.session_state:
     st.session_state.analysis_data = None
 if 'retriever' not in st.session_state:
     st.session_state.retriever = None
+if 'contract_score' not in st.session_state:
+    st.session_state.contract_score = None
 
-# Header
+def calculate_contract_score(analysis_data):
+    """Calculate overall contract score based on analysis"""
+    if not analysis_data:
+        return 0
+    
+    analysis = analysis_data
+    if "analysis" in analysis_data:
+        analysis = analysis_data["analysis"]
+    
+    # Base score
+    score = 100
+    
+    # Get clause data
+    clauses = analysis.get("clauses", [])
+    if not clauses:
+        return 50  # Neutral score if no clauses
+    
+    # Calculate risk deductions
+    high_risk_count = sum(1 for clause in clauses if isinstance(clause, dict) and clause.get("risk_level", "").lower() == "high")
+    medium_risk_count = sum(1 for clause in clauses if isinstance(clause, dict) and clause.get("risk_level", "").lower() == "medium")
+    low_risk_count = sum(1 for clause in clauses if isinstance(clause, dict) and clause.get("risk_level", "").lower() == "low")
+    
+    total_clauses = len(clauses)
+    
+    # Deduct points based on risk distribution
+    if total_clauses > 0:
+        high_risk_penalty = (high_risk_count / total_clauses) * 40  # Max 40 points deduction
+        medium_risk_penalty = (medium_risk_count / total_clauses) * 20  # Max 20 points deduction
+        
+        score = max(10, score - high_risk_penalty - medium_risk_penalty)
+    
+    return round(score, 1)
+
+def create_risk_distribution_chart(analysis_data):
+    """Create risk distribution pie chart"""
+    analysis = analysis_data
+    if "analysis" in analysis_data:
+        analysis = analysis_data["analysis"]
+    
+    clauses = analysis.get("clauses", [])
+    
+    risk_counts = {"High": 0, "Medium": 0, "Low": 0}
+    
+    for clause in clauses:
+        if isinstance(clause, dict):
+            risk_level = clause.get("risk_level", "Unknown").title()
+            if risk_level in risk_counts:
+                risk_counts[risk_level] += 1
+    
+    # Only create chart if there are clauses
+    if sum(risk_counts.values()) == 0:
+        return None
+    
+    # Create pie chart
+    fig = go.Figure(data=[go.Pie(
+        labels=list(risk_counts.keys()),
+        values=list(risk_counts.values()),
+        hole=.3,
+        marker_colors=['#ff6b6b', '#ffa726', '#66bb6a']
+    )])
+    
+    fig.update_layout(
+        title="Risk Distribution by Clause",
+        showlegend=True,
+        height=400,
+        font=dict(size=14)
+    )
+    
+    return fig
+
+def display_score_card(score):
+    """Display score with color coding"""
+    if score >= 80:
+        color = "#4caf50"  # Green
+        status = "Excellent"
+        icon = "🟢"
+    elif score >= 60:
+        color = "#ff9800"  # Orange
+        status = "Good"
+        icon = "🟡"
+    elif score >= 40:
+        color = "#ff5722"  # Red-Orange
+        status = "Needs Attention"
+        icon = "🟠"
+    else:
+        color = "#f44336"  # Red
+        status = "High Risk"
+        icon = "🔴"
+    
+    # Use Streamlit's built-in metric instead of custom HTML
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.metric(
+            label="Contract Score", 
+            value=f"{score}/100",
+            delta=f"{status}"
+        )
+        
+        # Add a simple colored indicator using Streamlit's built-in colors
+        if score >= 80:
+            st.success(f"{icon} {status} - Score: {score}")
+        elif score >= 60:
+            st.warning(f"{icon} {status} - Score: {score}")
+        else:
+            st.error(f"{icon} {status} - Score: {score}")
+
+# Header with company branding
 st.title("⚖️ AI-Powered Contract Analyzer")
-st.markdown("This tool helps **Hari and Winston Associates LLC** review contracts by highlighting risks and suggesting improvements.")
+st.markdown("**Hari and Winston Associates LLC** - This tool helps review contracts by highlighting risks and suggesting improvements.")
 
 # Create tabs
 tab1, tab2 = st.tabs(["📊 Analysis Dashboard", "💬 Chat with Contract"])
@@ -57,6 +216,10 @@ with tab1:
                         if analysis_result and "error" not in analysis_result:
                             st.session_state.analysis_data = analysis_result
                             
+                            # Calculate score
+                            score = calculate_contract_score(analysis_result)
+                            st.session_state.contract_score = score
+                            
                             # Create retriever for chatbot
                             try:
                                 retriever = get_pinecone_retriever(
@@ -84,9 +247,45 @@ with tab1:
         st.header("Analysis Results")
         
         if st.session_state.analysis_data:
+            # Show contract score if available
+            if st.session_state.contract_score:
+                display_score_card(st.session_state.contract_score)
+                
+                # Create analytics section
+                st.markdown("### 📈 Quick Analytics")
+                
+                analysis = st.session_state.analysis_data
+                if "analysis" in analysis:
+                    analysis = analysis["analysis"]
+                
+                clauses = analysis.get("clauses", [])
+                
+                if clauses:
+                    # Calculate metrics
+                    total_clauses = len(clauses)
+                    high_risk = sum(1 for c in clauses if isinstance(c, dict) and c.get("risk_level", "").lower() == "high")
+                    medium_risk = sum(1 for c in clauses if isinstance(c, dict) and c.get("risk_level", "").lower() == "medium")
+                    low_risk = sum(1 for c in clauses if isinstance(c, dict) and c.get("risk_level", "").lower() == "low")
+                    
+                    # Display metrics in columns
+                    col_a, col_b, col_c, col_d = st.columns(4)
+                    with col_a:
+                        st.metric("Total Clauses", total_clauses)
+                    with col_b:
+                        st.metric("High Risk", high_risk, delta=-high_risk if high_risk > 0 else None)
+                    with col_c:
+                        st.metric("Medium Risk", medium_risk, delta=-medium_risk if medium_risk > 0 else None)
+                    with col_d:
+                        st.metric("Low Risk", low_risk, delta=low_risk if low_risk > 0 else None)
+                    
+                    # Risk distribution chart
+                    risk_fig = create_risk_distribution_chart(st.session_state.analysis_data)
+                    if risk_fig:
+                        st.plotly_chart(risk_fig, use_container_width=True)
+            
             # Debug: Show raw data structure
-            st.write("**Debug - Raw Analysis Data:**")
-            st.json(st.session_state.analysis_data)
+            with st.expander("🔍 Debug - Raw Analysis Data"):
+                st.json(st.session_state.analysis_data)
             
             # Handle different possible response structures
             analysis = st.session_state.analysis_data
@@ -171,7 +370,7 @@ with tab2:
                 if retriever:
                     st.session_state.retriever = retriever
                     st.success("✅ Vector store fixed! Chat is now available.")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("❌ Vector store setup still failing.")
             except Exception as e:
@@ -186,7 +385,7 @@ with tab2:
                 try:
                     response = chat_with_contract(user_question, st.session_state.retriever)
                     st.markdown("**Answer:**")
-                    st.write(response)
+                    st.info(response)
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
         
@@ -206,7 +405,7 @@ with tab2:
                     try:
                         response = chat_with_contract(question, st.session_state.retriever)
                         st.markdown("**Answer:**")
-                        st.write(response)
+                        st.info(response)
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
 
@@ -224,8 +423,18 @@ with st.sidebar:
     Built for **Hari and Winston Associates LLC**
     """)
     
+    # Status indicators
+    st.markdown("### 📊 System Status")
+    
+    if st.session_state.contract_text:
+        st.success("✅ Document uploaded")
+    else:
+        st.info("📄 No document uploaded")
+    
     if st.session_state.analysis_data:
         st.success("✅ Contract analyzed")
+        if st.session_state.contract_score:
+            st.metric("Contract Score", f"{st.session_state.contract_score}/100")
         if st.session_state.retriever:
             st.success("✅ Chat ready")
         else:

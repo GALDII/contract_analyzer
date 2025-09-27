@@ -104,3 +104,4 @@ def get_pinecone_retriever(contract_text: str, analysis_data: dict):
         import traceback
         print(f"Full error trace: {traceback.format_exc()}")
         return None
+    
